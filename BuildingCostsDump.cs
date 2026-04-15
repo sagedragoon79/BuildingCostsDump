@@ -1,10 +1,11 @@
 using System;
 using System.IO;
+using System.Reflection;
 using System.Text;
 using MelonLoader;
 using UnityEngine;
 
-[assembly: MelonInfo(typeof(BuildingCostsDumpMod.BuildingCostsDump), "BuildingCostsDump", "1.1.0", "sagedragoon79")]
+[assembly: MelonInfo(typeof(BuildingCostsDumpMod.BuildingCostsDump), "BuildingCostsDump", "1.3.0", "sagedragoon79")]
 [assembly: MelonGame("Crate Entertainment", "Farthest Frontier")]
 
 namespace BuildingCostsDumpMod
@@ -69,23 +70,60 @@ namespace BuildingCostsDumpMod
                 string desTag = "";
                 try
                 {
-                    GameObject prefab = b.placeablePrefab;
-                    if (prefab == null && b.prefabEntries != null && b.prefabEntries.Count > 0)
+                    // Try every prefab source — placeablePrefab is just the ghost preview,
+                    // the real Building component with desirability data lives on prefabEntries[*].PREFAB().
+                    var candidates = new System.Collections.Generic.List<GameObject>();
+                    if (b.prefabEntries != null)
                     {
-                        prefab = b.prefabEntries[0]?.PREFAB();
-                    }
-                    if (prefab != null)
-                    {
-                        var building = prefab.GetComponent<Building>();
-                        if (building == null) building = prefab.GetComponentInChildren<Building>(true);
-                        if (building != null)
+                        for (int pi = 0; pi < b.prefabEntries.Count; pi++)
                         {
-                            desBonus = building.strategicPlanningBonus;
-                            desRadius = building.strategicPlanningRadius;
-                            desDropoff = building.strategicPlanningRadiusDropoff;
-                            desAllowMultiple = building.strategicPlanningAllowMultiple;
-                            desTag = building.strategicPlanningTagOverride ?? "";
-                            if (string.IsNullOrEmpty(desTag)) desTag = building.tag ?? "";
+                            var pe = b.prefabEntries[pi];
+                            if (pe == null) continue;
+                            try { var pf = pe.PREFAB(); if (pf != null) candidates.Add(pf); } catch { }
+                        }
+                    }
+                    if (b.placeablePrefab != null) candidates.Add(b.placeablePrefab);
+
+                    Building building = null;
+                    foreach (var prefab in candidates)
+                    {
+                        var bc = prefab.GetComponent<Building>();
+                        if (bc == null) bc = prefab.GetComponentInChildren<Building>(true);
+                        if (bc != null) { building = bc; break; }
+                    }
+
+                    if (building != null)
+                    {
+                        {
+                            // Read private serialized fields directly via reflection — the public
+                            // getters call techTreeManager which doesn't exist on raw prefabs and throws.
+                            const BindingFlags F = BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public | BindingFlags.FlattenHierarchy;
+                            Type bt = building.GetType();
+                            FieldInfo fBonus = bt.GetField("_strategicPlanningBonus", F);
+                            FieldInfo fRadius = bt.GetField("_strategicPlanningRadius", F);
+                            FieldInfo fDrop = bt.GetField("_strategicPlanningRadiusDropoff", F);
+                            FieldInfo fMulti = bt.GetField("_strategicPlanningAllowMultiple", F);
+                            FieldInfo fTag = bt.GetField("_strategicPlanningTagOverride", F);
+                            // Walk up base types if needed (protected fields on base class)
+                            Type walk = bt;
+                            while (walk != null && (fBonus == null || fRadius == null))
+                            {
+                                if (fBonus == null) fBonus = walk.GetField("_strategicPlanningBonus", F);
+                                if (fRadius == null) fRadius = walk.GetField("_strategicPlanningRadius", F);
+                                if (fDrop == null) fDrop = walk.GetField("_strategicPlanningRadiusDropoff", F);
+                                if (fMulti == null) fMulti = walk.GetField("_strategicPlanningAllowMultiple", F);
+                                if (fTag == null) fTag = walk.GetField("_strategicPlanningTagOverride", F);
+                                walk = walk.BaseType;
+                            }
+                            if (fBonus != null) desBonus = (float)fBonus.GetValue(building);
+                            if (fRadius != null) desRadius = (float)fRadius.GetValue(building);
+                            if (fDrop != null) desDropoff = (bool)fDrop.GetValue(building);
+                            if (fMulti != null) desAllowMultiple = (bool)fMulti.GetValue(building);
+                            if (fTag != null) desTag = (string)fTag.GetValue(building) ?? "";
+                            if (string.IsNullOrEmpty(desTag))
+                            {
+                                try { desTag = building.tag ?? ""; } catch { }
+                            }
                         }
                     }
                 }
